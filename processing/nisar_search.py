@@ -3,13 +3,20 @@
 # -----------------------------------------------------------------------------
 # File       : nisar_search.py
 # Module     : NISAR Catalogue Search
-# Version    : 0.1.1
+# Version    : 0.1.2
 # Author     : Punithan
 # Project    : NISAR Toolkit
 #
 # Description:
 #     Searches the ASF catalogue for NISAR products and returns the results
 #     as a spatial QGIS vector layer using the ASF product footprints.
+#
+#     The search supports:
+#         - Dataset
+#         - Processing level
+#         - Start date
+#         - End date
+#         - Maximum number of results
 #
 # Data source:
 #     Alaska Satellite Facility (ASF) / NASA Earthdata
@@ -19,11 +26,12 @@
 # =============================================================================
 
 import json
+from datetime import datetime
+
 from qgis.core import (
     QgsFeature,
     QgsFields,
     QgsField,
-    QgsGeometry,
     QgsJsonUtils,
     QgsProcessing,
     QgsProcessingAlgorithm,
@@ -40,6 +48,8 @@ class NISARSearchAlgorithm(QgsProcessingAlgorithm):
 
     DATASET = "DATASET"
     PROCESSING_LEVEL = "PROCESSING_LEVEL"
+    START_DATE = "START_DATE"
+    END_DATE = "END_DATE"
     MAX_RESULTS = "MAX_RESULTS"
     OUTPUT = "OUTPUT"
 
@@ -59,6 +69,24 @@ class NISARSearchAlgorithm(QgsProcessingAlgorithm):
                 self.PROCESSING_LEVEL,
                 "Processing level",
                 defaultValue="GSLC",
+            )
+        )
+
+        self.addParameter(
+            QgsProcessingParameterString(
+                self.START_DATE,
+                "Start date",
+                defaultValue="",
+                optional=True,
+            )
+        )
+
+        self.addParameter(
+            QgsProcessingParameterString(
+                self.END_DATE,
+                "End date",
+                defaultValue="",
+                optional=True,
             )
         )
 
@@ -111,6 +139,48 @@ class NISARSearchAlgorithm(QgsProcessingAlgorithm):
 
         return fields
 
+    @staticmethod
+    def _format_start_date(date_text):
+        """Convert a YYYY-MM-DD start date to an ASF timestamp."""
+
+        if not date_text:
+            return None
+
+        try:
+            parsed_date = datetime.strptime(
+                date_text,
+                "%Y-%m-%d",
+            )
+        except ValueError as exc:
+            raise ValueError(
+                "Start date must use the format YYYY-MM-DD."
+            ) from exc
+
+        return parsed_date.strftime(
+            "%Y-%m-%dT00:00:00Z"
+        )
+
+    @staticmethod
+    def _format_end_date(date_text):
+        """Convert a YYYY-MM-DD end date to an ASF timestamp."""
+
+        if not date_text:
+            return None
+
+        try:
+            parsed_date = datetime.strptime(
+                date_text,
+                "%Y-%m-%d",
+            )
+        except ValueError as exc:
+            raise ValueError(
+                "End date must use the format YYYY-MM-DD."
+            ) from exc
+
+        return parsed_date.strftime(
+            "%Y-%m-%dT23:59:59Z"
+        )
+
     def processAlgorithm(self, parameters, context, feedback):
         """Execute the NISAR catalogue search."""
 
@@ -134,22 +204,60 @@ class NISARSearchAlgorithm(QgsProcessingAlgorithm):
             context,
         )
 
+        start_date_text = self.parameterAsString(
+            parameters,
+            self.START_DATE,
+            context,
+        ).strip()
+
+        end_date_text = self.parameterAsString(
+            parameters,
+            self.END_DATE,
+            context,
+        ).strip()
+
         max_results = self.parameterAsInt(
             parameters,
             self.MAX_RESULTS,
             context,
         )
 
+        start_date = self._format_start_date(
+            start_date_text
+        )
+
+        end_date = self._format_end_date(
+            end_date_text
+        )
+
+        if start_date and end_date:
+            if start_date > end_date:
+                raise ValueError(
+                    "Start date cannot be later than end date."
+                )
+
         feedback.pushInfo(
             f"Searching ASF catalogue: dataset={dataset}, "
             f"processingLevel={processing_level}, "
+            f"start={start_date or 'not specified'}, "
+            f"end={end_date or 'not specified'}, "
             f"maxResults={max_results}"
         )
 
+        search_parameters = {
+            "dataset": dataset,
+            "processingLevel": processing_level,
+            "maxResults": max_results,
+        }
+
+        if start_date:
+            search_parameters["start"] = start_date
+
+        if end_date:
+            search_parameters["end"] = end_date
+
         results = asf_search.search(
-            dataset=dataset,
-            processingLevel=processing_level,
-            maxResults=max_results,
+            **search_parameters
         )
 
         feedback.pushInfo(
@@ -198,7 +306,10 @@ class NISARSearchAlgorithm(QgsProcessingAlgorithm):
 
             feature["product_id"] = properties.get(
                 "fileID",
-                properties.get("sceneName", ""),
+                properties.get(
+                    "sceneName",
+                    "",
+                ),
             )
 
             feature["file_name"] = properties.get(
@@ -272,7 +383,10 @@ class NISARSearchAlgorithm(QgsProcessingAlgorithm):
             )
 
             file_size = self._get_h5_size_mb(
-                properties.get("bytes", {})
+                properties.get(
+                    "bytes",
+                    {},
+                )
             )
 
             feature["file_size_mb"] = file_size
@@ -282,8 +396,13 @@ class NISARSearchAlgorithm(QgsProcessingAlgorithm):
                 [],
             )
 
-            if isinstance(browse_urls, list) and browse_urls:
+            if isinstance(
+                browse_urls,
+                list,
+            ) and browse_urls:
+
                 feature["browse_url"] = browse_urls[0]
+
             else:
                 feature["browse_url"] = ""
 
@@ -302,42 +421,67 @@ class NISARSearchAlgorithm(QgsProcessingAlgorithm):
     def _get_h5_size_mb(byte_metadata):
         """Extract the HDF5 product size and convert bytes to MiB."""
 
-        if not isinstance(byte_metadata, dict):
+        if not isinstance(
+            byte_metadata,
+            dict,
+        ):
             return None
 
         for filename, metadata in byte_metadata.items():
-            if filename.lower().endswith(".h5"):
-                if isinstance(metadata, dict):
-                    size_bytes = metadata.get("bytes")
 
-                    if isinstance(size_bytes, (int, float)):
-                        return size_bytes / (1024 * 1024)
+            if filename.lower().endswith(".h5"):
+
+                if isinstance(
+                    metadata,
+                    dict,
+                ):
+
+                    size_bytes = metadata.get(
+                        "bytes"
+                    )
+
+                    if isinstance(
+                        size_bytes,
+                        (int, float),
+                    ):
+
+                        return size_bytes / (
+                            1024 * 1024
+                        )
 
         return None
 
     def name(self):
         """Return the internal algorithm name."""
+
         return "nisar_search"
 
     def displayName(self):
         """Return the user-visible algorithm name."""
+
         return "Search NISAR Catalogue"
 
     def group(self):
         """Return the Processing toolbox group."""
+
         return "NISAR Toolkit"
 
     def groupId(self):
         """Return the Processing toolbox group ID."""
+
         return "nisar_toolkit"
 
     def shortHelpString(self):
         """Return the algorithm help text."""
+
         return (
-            "Search the ASF catalogue for NISAR products and return "
-            "the results with product metadata and spatial footprints."
+            "Search the ASF catalogue for NISAR products using "
+            "dataset, processing level, optional acquisition dates, "
+            "and maximum result count. Returns product metadata "
+            "and spatial footprints."
         )
 
     def createInstance(self):
         """Create a new algorithm instance."""
+
         return NISARSearchAlgorithm()
