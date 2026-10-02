@@ -1,0 +1,18 @@
+[general]
+name=NISAR Toolkit
+qgisMinimumVersion=3.28
+description=NISAR satellite data search, inspection, download, and QGIS integration toolkit.
+version=0.1.0
+author=Punithan
+email=punithanvadivel28@gmail.com
+about=NISAR Toolkit provides tools for discovering, inspecting, downloading, and working with NISAR satellite data in QGIS.
+category=Raster
+icon=icon.png
+experimental=True
+deprecated=False
+tags=NISAR,SAR,remote sensing,GIS,Earth observation
+license=GPL-3.0
+hasProcessingProvider=yes
+homepage=https://github.com/HeryTroop01/NISAR-Toolkit
+repository=https://github.com/HeryTroop01/NISAR-Toolkit
+tracker=https://github.com/HeryTroop01/NISAR-Toolkit/issues

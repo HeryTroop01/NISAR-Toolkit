@@ -1,0 +1,25 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# QGIS / temporary files
+*.log
+*.tmp
+*.bak
+
+# IDE files
+.vscode/
+.idea/
+
+# Local credentials and secrets
+.env
+*.env
+credentials.json
+token.json
+tokens/
+credentials/
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+desktop.ini
