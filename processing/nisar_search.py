@@ -8,12 +8,8 @@
 # Project    : NISAR Toolkit
 #
 # Description:
-#     Provides the first NISAR catalogue-search Processing algorithm.
-#
-#     This module communicates with the ASF Search API through the
-#     asf_search Python package. It is intentionally limited to catalogue
-#     discovery in this version. Downloading, authentication, HDF5
-#     inspection, and QGIS layer loading will be implemented separately.
+#     Searches the ASF catalogue for NISAR products and returns the results
+#     as a spatial QGIS vector layer using the ASF product footprints.
 #
 # Data source:
 #     Alaska Satellite Facility (ASF) / NASA Earthdata
@@ -22,15 +18,18 @@
 #     Development
 # =============================================================================
 
+import json
 from qgis.core import (
-    QgsProcessing,
-    QgsProcessingAlgorithm,
-    QgsProcessingParameterNumber,
-    QgsProcessingParameterString,
-    QgsProcessingParameterFeatureSink,
     QgsFeature,
     QgsFields,
     QgsField,
+    QgsGeometry,
+    QgsJsonUtils,
+    QgsProcessing,
+    QgsProcessingAlgorithm,
+    QgsProcessingParameterFeatureSink,
+    QgsProcessingParameterNumber,
+    QgsProcessingParameterString,
     QgsWkbTypes,
 )
 from qgis.PyQt.QtCore import QVariant
@@ -74,13 +73,7 @@ class NISARSearchAlgorithm(QgsProcessingAlgorithm):
             )
         )
 
-        fields = QgsFields()
-
-        fields.append(QgsField("product_id", QVariant.String))
-        fields.append(QgsField("processing_level", QVariant.String))
-        fields.append(QgsField("platform", QVariant.String))
-        fields.append(QgsField("start_time", QVariant.String))
-        fields.append(QgsField("end_time", QVariant.String))
+        fields = self._create_output_fields()
 
         self.addParameter(
             QgsProcessingParameterFeatureSink(
@@ -88,9 +81,35 @@ class NISARSearchAlgorithm(QgsProcessingAlgorithm):
                 "Search results",
                 QgsProcessing.TypeVector,
                 fields,
-                QgsWkbTypes.NoGeometry,
+                QgsWkbTypes.Polygon,
             )
         )
+
+    def _create_output_fields(self):
+        """Create the catalogue result fields."""
+
+        fields = QgsFields()
+
+        fields.append(QgsField("product_id", QVariant.String))
+        fields.append(QgsField("file_name", QVariant.String))
+        fields.append(QgsField("processing_level", QVariant.String))
+        fields.append(QgsField("collection", QVariant.String))
+        fields.append(QgsField("platform", QVariant.String))
+        fields.append(QgsField("sensor", QVariant.String))
+        fields.append(QgsField("start_time", QVariant.String))
+        fields.append(QgsField("end_time", QVariant.String))
+        fields.append(QgsField("flight_direction", QVariant.String))
+        fields.append(QgsField("orbit", QVariant.LongLong))
+        fields.append(QgsField("orbit_type", QVariant.String))
+        fields.append(QgsField("path_number", QVariant.LongLong))
+        fields.append(QgsField("frame_number", QVariant.LongLong))
+        fields.append(QgsField("polarization", QVariant.String))
+        fields.append(QgsField("frame_coverage", QVariant.String))
+        fields.append(QgsField("file_size_mb", QVariant.Double))
+        fields.append(QgsField("browse_url", QVariant.String))
+        fields.append(QgsField("product_url", QVariant.String))
+
+        return fields
 
     def processAlgorithm(self, parameters, context, feedback):
         """Execute the NISAR catalogue search."""
@@ -99,7 +118,8 @@ class NISARSearchAlgorithm(QgsProcessingAlgorithm):
             import asf_search
         except ImportError as exc:
             raise RuntimeError(
-                "The 'asf_search' package is not installed in the QGIS Python environment."
+                "The 'asf_search' package is not installed in the QGIS "
+                "Python environment."
             ) from exc
 
         dataset = self.parameterAsString(
@@ -136,62 +156,164 @@ class NISARSearchAlgorithm(QgsProcessingAlgorithm):
             f"ASF returned {len(results)} result(s)."
         )
 
-        fields = QgsFields()
-
-        fields.append(QgsField("product_id", QVariant.String))
-        fields.append(QgsField("processing_level", QVariant.String))
-        fields.append(QgsField("platform", QVariant.String))
-        fields.append(QgsField("start_time", QVariant.String))
-        fields.append(QgsField("end_time", QVariant.String))
+        fields = self._create_output_fields()
 
         sink, destination_id = self.parameterAsSink(
             parameters,
             self.OUTPUT,
             context,
             fields,
-            QgsWkbTypes.NoGeometry,
+            QgsWkbTypes.Polygon,
         )
 
         if sink is None:
-            raise RuntimeError("Could not create the output layer.")
+            raise RuntimeError(
+                "Could not create the output layer."
+            )
 
         for result in results:
             if feedback.isCanceled():
                 break
 
+            properties = getattr(
+                result,
+                "properties",
+                {},
+            )
+
+            geometry_data = getattr(
+                result,
+                "geometry",
+                None,
+            )
+
             feature = QgsFeature(fields)
 
-            feature["product_id"] = getattr(
-                result,
-                "properties",
-                {},
-            ).get("sceneName", result.properties.get("fileID", ""))
+            if geometry_data:
+                feature.setGeometry(
+                    QgsJsonUtils.geometryFromGeoJson(
+                        json.dumps(geometry_data)
+                    )
+                )
 
-            feature["processing_level"] = processing_level
+            feature["product_id"] = properties.get(
+                "fileID",
+                properties.get("sceneName", ""),
+            )
 
-            feature["platform"] = getattr(
-                result,
-                "properties",
-                {},
-            ).get("platform", "NISAR")
+            feature["file_name"] = properties.get(
+                "fileName",
+                "",
+            )
 
-            feature["start_time"] = getattr(
-                result,
-                "properties",
-                {},
-            ).get("startTime", "")
+            feature["processing_level"] = properties.get(
+                "processingLevel",
+                processing_level,
+            )
 
-            feature["end_time"] = getattr(
-                result,
-                "properties",
-                {},
-            ).get("stopTime", "")
+            feature["collection"] = properties.get(
+                "collectionName",
+                "",
+            )
+
+            feature["platform"] = properties.get(
+                "platform",
+                "",
+            )
+
+            feature["sensor"] = properties.get(
+                "sensor",
+                "",
+            )
+
+            feature["start_time"] = properties.get(
+                "startTime",
+                "",
+            )
+
+            feature["end_time"] = properties.get(
+                "stopTime",
+                "",
+            )
+
+            feature["flight_direction"] = properties.get(
+                "flightDirection",
+                "",
+            )
+
+            feature["orbit"] = properties.get(
+                "orbit",
+                None,
+            )
+
+            feature["orbit_type"] = properties.get(
+                "orbitType",
+                "",
+            )
+
+            feature["path_number"] = properties.get(
+                "pathNumber",
+                None,
+            )
+
+            feature["frame_number"] = properties.get(
+                "frameNumber",
+                None,
+            )
+
+            feature["polarization"] = properties.get(
+                "polarization",
+                "",
+            )
+
+            feature["frame_coverage"] = properties.get(
+                "frameCoverage",
+                "",
+            )
+
+            file_size = self._get_h5_size_mb(
+                properties.get("bytes", {})
+            )
+
+            feature["file_size_mb"] = file_size
+
+            browse_urls = properties.get(
+                "browse",
+                [],
+            )
+
+            if isinstance(browse_urls, list) and browse_urls:
+                feature["browse_url"] = browse_urls[0]
+            else:
+                feature["browse_url"] = ""
+
+            feature["product_url"] = properties.get(
+                "url",
+                "",
+            )
 
             sink.addFeature(feature)
 
         return {
             self.OUTPUT: destination_id,
         }
+
+    @staticmethod
+    def _get_h5_size_mb(byte_metadata):
+        """Extract the HDF5 product size and convert bytes to MiB."""
+
+        if not isinstance(byte_metadata, dict):
+            return None
+
+        for filename, metadata in byte_metadata.items():
+            if filename.lower().endswith(".h5"):
+                if isinstance(metadata, dict):
+                    size_bytes = metadata.get("bytes")
+
+                    if isinstance(size_bytes, (int, float)):
+                        return size_bytes / (1024 * 1024)
+
+        return None
 
     def name(self):
         """Return the internal algorithm name."""
@@ -212,9 +334,8 @@ class NISARSearchAlgorithm(QgsProcessingAlgorithm):
     def shortHelpString(self):
         """Return the algorithm help text."""
         return (
-            "Search the ASF catalogue for NISAR products. "
-            "This initial version supports dataset, processing-level, "
-            "and maximum-result filtering."
+            "Search the ASF catalogue for NISAR products and return "
+            "the results with product metadata and spatial footprints."
         )
 
     def createInstance(self):
