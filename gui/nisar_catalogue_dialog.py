@@ -3,7 +3,7 @@
 # -----------------------------------------------------------------------------
 # File       : nisar_catalogue_dialog.py
 # Module     : NISAR Catalogue Search Dialog
-# Version    : 0.1.0
+# Version    : 0.1.2
 # Author     : Punithan
 # Project    : NISAR Toolkit
 #
@@ -16,6 +16,8 @@
 #         - Retains the complete ASF product properties for each result.
 #         - Opens the NISAR product preview dialog.
 #         - Opens the ASF product URL in the default web browser.
+#         - Opens the NISAR product download dialog.
+#         - Creates a session-only NASA Earthdata ASF session when required.
 # =============================================================================
 
 import webbrowser
@@ -41,12 +43,17 @@ class NISARCatalogueDialog(QDialog):
 
     def __init__(self, parent=None):
         """Initialize the catalogue search dialog."""
+
         super().__init__(parent)
 
         self.setWindowTitle("NISAR Catalogue Search")
         self.resize(1200, 700)
 
         self.results = []
+
+        # Authenticated ASF session.
+        # This remains in memory for the lifetime of the catalogue dialog.
+        self.asf_session = None
 
         self._create_interface()
 
@@ -183,12 +190,24 @@ class NISARCatalogueDialog(QDialog):
             self._open_selected_product
         )
 
+        self.download_button = QPushButton(
+            "Download"
+        )
+
+        self.download_button.clicked.connect(
+            self._download_selected
+        )
+
         action_layout.addWidget(
             self.preview_button
         )
 
         action_layout.addWidget(
             self.open_product_button
+        )
+
+        action_layout.addWidget(
+            self.download_button
         )
 
         action_layout.addStretch()
@@ -218,6 +237,7 @@ class NISARCatalogueDialog(QDialog):
 
         try:
             import asf_search
+
         except ImportError:
             QMessageBox.critical(
                 self,
@@ -225,12 +245,15 @@ class NISARCatalogueDialog(QDialog):
                 "The 'asf_search' package is not installed "
                 "in the QGIS Python environment.",
             )
+
             return
 
         dataset = self.dataset_combo.currentText()
+
         processing_level = (
             self.processing_level_combo.currentText()
         )
+
         max_results = self.max_results_spin.value()
 
         self.status_label.setText(
@@ -356,6 +379,7 @@ class NISARCatalogueDialog(QDialog):
                 "NISAR Toolkit",
                 "Please select a catalogue product first.",
             )
+
             return None
 
         row = selected_rows[0].row()
@@ -380,7 +404,10 @@ class NISARCatalogueDialog(QDialog):
         )
 
         try:
-            from importlib.util import module_from_spec, spec_from_file_location
+            from importlib.util import (
+                module_from_spec,
+                spec_from_file_location,
+            )
             from pathlib import Path
 
             module_path = (
@@ -399,9 +426,12 @@ class NISARCatalogueDialog(QDialog):
                 )
 
             module = module_from_spec(spec)
+
             spec.loader.exec_module(module)
 
-            NISARPreviewDialog = module.NISARPreviewDialog
+            NISARPreviewDialog = (
+                module.NISARPreviewDialog
+            )
 
             self.preview_dialog = NISARPreviewDialog(
                 properties,
@@ -442,11 +472,164 @@ class NISARCatalogueDialog(QDialog):
                 "NISAR Toolkit",
                 "No product URL is available for this result.",
             )
+
             return
 
         webbrowser.open(
             product_url
         )
+
+    def _authenticate_earthdata(self):
+        """Open the Earthdata authentication dialog."""
+
+        try:
+            from importlib.util import (
+                module_from_spec,
+                spec_from_file_location,
+            )
+            from pathlib import Path
+
+            module_path = (
+                Path(__file__).resolve().parent
+                / "nisar_auth_dialog.py"
+            )
+
+            spec = spec_from_file_location(
+                "nisar_auth_dialog",
+                module_path,
+            )
+
+            if spec is None or spec.loader is None:
+                raise ImportError(
+                    "Could not locate the Earthdata authentication dialog."
+                )
+
+            module = module_from_spec(spec)
+
+            spec.loader.exec_module(module)
+
+            NISARAuthDialog = (
+                module.NISARAuthDialog
+            )
+
+            auth_dialog = NISARAuthDialog(
+                parent=self
+            )
+
+            result = auth_dialog.exec()
+
+            if result == QDialog.Accepted:
+                self.asf_session = auth_dialog.session
+
+                return self.asf_session
+
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Earthdata Authentication",
+                (
+                    "Could not open the Earthdata authentication "
+                    f"dialog:\n\n{exc}"
+                ),
+            )
+
+        return None
+
+    def _download_selected(self):
+        """Open the NISAR download dialog for the selected product."""
+
+        result = self._get_selected_result()
+
+        if result is None:
+            return
+
+        # ---------------------------------------------------------------------
+        # Authenticate if an ASF session does not already exist.
+        # ---------------------------------------------------------------------
+
+        if self.asf_session is None:
+
+            self.status_label.setText(
+                "Earthdata authentication required."
+            )
+
+            session = self._authenticate_earthdata()
+
+            if session is None:
+                self.status_label.setText(
+                    "Earthdata authentication cancelled or failed."
+                )
+
+                return
+
+        else:
+            session = self.asf_session
+
+        properties = getattr(
+            result,
+            "properties",
+            {},
+        )
+
+        # ---------------------------------------------------------------------
+        # Open download dialog.
+        # ---------------------------------------------------------------------
+
+        try:
+            from importlib.util import (
+                module_from_spec,
+                spec_from_file_location,
+            )
+            from pathlib import Path
+
+            module_path = (
+                Path(__file__).resolve().parent
+                / "nisar_download_dialog.py"
+            )
+
+            spec = spec_from_file_location(
+                "nisar_download_dialog",
+                module_path,
+            )
+
+            if spec is None or spec.loader is None:
+                raise ImportError(
+                    "Could not locate the NISAR download dialog module."
+                )
+
+            module = module_from_spec(spec)
+
+            spec.loader.exec_module(module)
+
+            NISARDownloadDialog = (
+                module.NISARDownloadDialog
+            )
+
+            self.download_dialog = NISARDownloadDialog(
+                properties,
+                session=session,
+                parent=self,
+            )
+
+            self.download_dialog.exec()
+
+            self.status_label.setText(
+                "Ready."
+            )
+
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "NISAR Download",
+                (
+                    "Could not open the download dialog:\n\n"
+                    f"{exc}"
+                ),
+            )
+
+            self.status_label.setText(
+                "Download dialog failed to open."
+            )
 
     @staticmethod
     def _get_h5_size_mb(byte_metadata):
@@ -475,6 +658,7 @@ class NISARCatalogueDialog(QDialog):
                         size_bytes,
                         (int, float),
                     ):
+
                         return round(
                             size_bytes / (1024 * 1024),
                             2,

@@ -79,11 +79,25 @@ class NISARToolkit:
             self.action = None
 
     def run(self):
-        """Open the plugin information dialog."""
+        """Open the NISAR Catalogue Search dialog."""
 
-        QMessageBox.information(
-            self.iface.mainWindow(),
-            "NISAR Toolkit",
-            "NISAR Toolkit v0.1.1 is loaded successfully.\n\n"
-            "The NISAR Processing provider is now available.",
-        )
+        try:
+            from .gui.nisar_catalogue_dialog import (
+                NISARCatalogueDialog,
+            )
+
+            self.catalogue_dialog = NISARCatalogueDialog(
+                parent=self.iface.mainWindow()
+            )
+
+            self.catalogue_dialog.exec()
+
+        except Exception as exc:
+            QMessageBox.critical(
+                self.iface.mainWindow(),
+                "NISAR Toolkit",
+                (
+                    "Could not open the NISAR Catalogue Search dialog.\n\n"
+                    f"{exc}"
+                ),
+            )
